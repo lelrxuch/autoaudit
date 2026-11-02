@@ -1,0 +1,58 @@
+erDiagram
+    TABLA_AUDITADA ||--o{ COLUMNA_AUDITADA : "contiene"
+    COLUMNA_AUDITADA ||--o{ CONFIGURACION : "se vigila en"
+    TIPO_EVENTO ||--o{ CONFIGURACION : "clasifica"
+    CONFIGURACION ||--o{ BITACORA : "origina"
+    USUARIO_AUDITADO ||--o{ BITACORA : "responsable de"
+    ESTACION_TRABAJO ||--o{ BITACORA : "origen de"
+
+    TABLA_AUDITADA {
+        serial id PK
+        varchar esquema UK
+        varchar tabla UK
+        boolean activa
+        boolean trigger_desplegado
+    }
+
+    COLUMNA_AUDITADA {
+        serial id PK
+        integer tabla_auditada_id FK
+        varchar columna UK
+        boolean activa
+    }
+
+    TIPO_EVENTO {
+        smallint id PK
+        varchar codigo UK
+        varchar descripcion
+    }
+
+    CONFIGURACION {
+        serial id PK
+        integer columna_auditada_id FK
+        smallint tipo_evento_id FK
+        boolean activa
+    }
+
+    USUARIO_AUDITADO {
+        serial id PK
+        varchar nombre_usuario UK
+    }
+
+    ESTACION_TRABAJO {
+        serial id PK
+        inet direccion_ip UK
+        varchar nombre_host
+    }
+
+    BITACORA {
+        bigserial id PK
+        integer configuracion_id FK
+        integer usuario_id FK
+        integer estacion_id FK
+        timestamptz fecha_hora
+        text clave_primaria
+        text valor_anterior
+        text valor_nuevo
+        bigint id_transaccion
+    }
