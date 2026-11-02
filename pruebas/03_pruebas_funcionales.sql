@@ -326,10 +326,13 @@ DECLARE
 BEGIN
     SELECT configuracion_id INTO v_cfg FROM audit.bitacora LIMIT 1;
 
+    -- PostgreSQL 18 cambio el codigo de error de las acciones RESTRICT:
+    -- antes 23503 (foreign_key_violation), ahora 23001 (restrict_violation).
+    -- Se atrapan ambos para que la prueba sirva en las dos versiones.
     BEGIN
         DELETE FROM audit.configuracion WHERE id = v_cfg;
         RAISE EXCEPTION 'Caso 9 fallido: se elimino una configuracion con bitacora asociada';
-    EXCEPTION WHEN foreign_key_violation THEN
+    EXCEPTION WHEN foreign_key_violation OR restrict_violation THEN
         RAISE NOTICE 'Caso 9 integridad de la bitacora: correcto (eliminacion bloqueada)';
     END;
 END;
