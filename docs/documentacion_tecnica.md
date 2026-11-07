@@ -2,8 +2,13 @@
 title: "AutoAudit"
 subtitle: "Sistema de auditoría automatizado. Documentación técnica"
 author:
-  - "Cristopher Isaí Contreras Salazar"
-date: "Noviembre de 2026"
+  - "Cristopher Isaí Contreras Salazar, 0910-23-11334"
+  - "Marcos Anderson Alvarado Cojolón, 090-24-16484"
+date: |
+  Universidad Mariano Gálvez de Guatemala\
+  Facultad de Ingeniería en Sistemas de Información y Ciencias de la Computación\
+  Bases de Datos I (22026-090-027-5) · Ing. René Ornélyz\
+  Noviembre de 2026
 lang: es
 papersize: letter
 geometry: "top=2.5cm,bottom=2.5cm,left=2.6cm,right=2.6cm"
@@ -175,6 +180,46 @@ Registro centralizado de cambios. Conserva los datos aunque el registro fuente s
 | `valor_nuevo` | text | Si |  | Valor posterior de la columna. Nulo en DELETE. |
 | `id_transaccion` | bigint | No |  | Identificador de transaccion. Agrupa los cambios producidos por una misma sentencia o transaccion. |
 
+# Módulos del sistema
+
+El sistema se divide en cuatro módulos que corresponden al alcance funcional del enunciado. Los tres primeros viven por completo dentro de la base de datos, en el esquema `audit`, y el cuarto es la interfaz gráfica.
+
+## Módulo de configuración
+
+Concentra la validación y el control de acceso. Su punto de entrada es `audit.configurar_auditoria`, que recibe el esquema, la tabla, el arreglo de columnas a vigilar y el arreglo de eventos, y en una sola llamada valida, persiste y despliega.
+
+La validación comprueba tres cosas contra el diccionario de datos del motor antes de tocar nada: que la tabla exista, que tenga llave primaria y que todas las columnas indicadas existan en ella. Rechaza además los eventos que no pertenezcan al catálogo y la auditoría del propio esquema `audit`, que produciría recursión infinita.
+
+La decisión de colocar estas comprobaciones en la base y no en la interfaz responde a que la interfaz se puede modificar o evitar. Una configuración hecha desde `psql` pasa por los mismos controles que una hecha desde la aplicación, y el requisito de que solo usuarios administrativos puedan configurar auditoría se cumple de verdad, porque `audit.fn_exigir_administrador` aborta la operación cuando quien llama no es superusuario ni miembro del rol `autoaudit_admin`.
+
+Toda la operación ocurre dentro de una transacción y el resultado del despliegue se comprueba antes de confirmarla. Esto importa porque `audit.regenerar_todos` no propaga las excepciones: captura el error de cada tabla y lo devuelve como texto en una columna del resultado. Quien no revise esa salida dará por buena una configuración cuyo trigger nunca se instaló, y peor aún, la dejará persistida, de modo que todo despliegue posterior de esa misma tabla fallará por la configuración inválida que quedó guardada.
+
+Para suspender la auditoría existen cuatro funciones, que se diferencian por su alcance y por si obligan a regenerar el trigger. `audit.desactivar_evento` y `audit.activar_evento` operan sobre una combinación de columna y evento, y surten efecto de inmediato sin regenerar, porque la bandera de activación se consulta en tiempo de ejecución. `audit.desactivar_columna` deja de vigilar una columna entera y sí regenera, porque la lista de columnas va empotrada en el código del trigger; si era la última columna activa, retira el trigger. `audit.desactivar_tabla` y `audit.activar_tabla` suspenden y reanudan la tabla completa.
+
+Ninguna de estas funciones elimina configuración. Se desactiva en lugar de borrar porque la bitácora referencia la configuración mediante una llave foránea con acción `RESTRICT`, de modo que borrarla sería imposible mientras exista historia acumulada, que es precisamente la protección que se buscaba.
+
+## Módulo de generación de triggers
+
+Descrito en el apartado de despliegue. Lo consume el módulo de configuración, que es quien decide cuándo regenerar.
+
+## Módulo de consulta y reporte
+
+La vista `audit.v_bitacora_detalle` presenta la bitácora con la tabla, la columna, el evento, el usuario y la estación ya resueltos, y es la base de los tres reportes que pide el enunciado.
+
+Sobre ella se construyen las consultas parametrizadas. `audit.consultar_historial` acepta filtros opcionales por usuario, por columna, por esquema y tabla y por rango de fechas, que se combinan con conjunción lógica; omitirlos todos devuelve la bitácora completa. `audit.consultar_por_usuario` y `audit.consultar_por_columna` son envolturas que reciben nombres en lugar de identificadores. `audit.consultar_por_registro` devuelve la historia completa de un registro concreto en orden ascendente, y es la consulta que demuestra que la bitácora preserva los datos aunque el registro ya no exista en la tabla de origen.
+
+Todas filtran internamente por identificador y no por nombre. La bitácora tiene índice sobre `usuario_id` y sobre `configuracion_id`, de manera que filtrar por el identificador descarta filas antes de resolver las uniones, mientras que filtrar por el nombre obliga a unir primero y recorrer mucho más. Las funciones que reciben nombres resuelven el nombre a identificador en un paso aparte y luego delegan, para conservar esa ventaja.
+
+La vista `audit.v_resumen_actividad` agrega los cambios por usuario, objeto y tipo de evento, con la primera y la última fecha de cada combinación.
+
+## Interfaz
+
+La interfaz está escrita en Python con `tkinter` y se comunica con la base mediante `psycopg2`. Reside en `app/autoaudit_app.py` y se organiza en tres pestañas: configuración, bitácora y estado.
+
+No construye instrucciones de configuración por su cuenta. Llama a las funciones descritas arriba y se limita a traducir sus errores a mensajes legibles, de modo que la lógica de validación existe en un solo lugar. El código separa una clase de acceso a datos, sin dependencia de `tkinter`, de la clase que arma las ventanas, lo que permite probar la capa de datos sin necesidad de un entorno gráfico.
+
+Los parámetros de conexión se leen de variables de entorno. No hay credenciales escritas en el código fuente, que es un requisito elemental cuando el repositorio es público.
+
 # Procedimiento de instalación y despliegue
 
 ## Requisitos previos
@@ -186,11 +231,10 @@ Se requiere PostgreSQL 18 en funcionamiento sobre Ubuntu 26.04 LTS, una base de 
 Los guiones se ejecutan en orden sobre la base de datos destino, pues cada uno depende de los objetos que crea el anterior. El primero levanta el esquema y las siete tablas, el segundo carga el catálogo de eventos y las funciones de contexto, el tercero instala el generador de triggers y el cuarto las vistas de consulta al diccionario de datos del motor.
 
 ```
-psql -d basedatos -f sql/01_esquema.sql
-psql -d basedatos -f sql/02_catalogos.sql
-psql -d basedatos -f sql/03_generador.sql
-psql -d basedatos -f sql/04_diccionario_sistema.sql
+psql -d basedatos -f sql/00_instalar.sql
 ```
+
+Ese guion ejecuta en orden los seis que componen el sistema: el esquema y sus siete tablas, el catálogo de eventos y las funciones de contexto, el generador de triggers, las vistas de consulta al diccionario del motor, el módulo de configuración y el módulo de consulta y reporte. Cada uno depende de los objetos que crea el anterior, de modo que el orden importa.
 
 Al terminar, la base contiene el esquema `audit` sin ninguna tabla de negocio habilitada todavía. El sistema queda instalado pero inactivo, que es el estado correcto antes de decidir qué se va a vigilar.
 
@@ -214,29 +258,100 @@ El estado del despliegue puede consultarse en cualquier momento en la vista `aud
 
 # Manual de configuración y activación de auditoría por tabla
 
+El sistema puede configurarse desde la interfaz gráfica o directamente con SQL. Ambas vías ejecutan las mismas funciones y aplican las mismas validaciones, de modo que la elección es solo de comodidad.
+
 ## Qué puede auditarse
 
-Antes de habilitar una tabla conviene consultar la vista `audit.v_diccionario_tablas`, que lista las tablas de los esquemas de usuario e indica cuáles tienen llave primaria. Solo las que la tienen pueden auditarse, pues sin ella la bitácora no podría identificar el registro afectado. La vista `audit.v_diccionario_columnas` cumple el mismo papel para las columnas y muestra el tipo de dato de cada una.
+Solo las tablas que tienen llave primaria. Sin ella la bitácora no podría identificar el registro afectado, y tanto el generador como el módulo de configuración las rechazan. La vista `audit.v_diccionario_tablas` lista las tablas de los esquemas de usuario e indica cuáles cumplen el requisito; la vista `audit.v_diccionario_columnas` hace lo propio con las columnas y muestra el tipo de dato de cada una. La interfaz gráfica solo ofrece las tablas que pasan el filtro, así que desde ahí el error no es posible.
 
-## Habilitar una tabla
+Tampoco puede auditarse el esquema `audit`, porque auditar la bitácora con la bitácora produciría recursión infinita.
 
-La configuración se construye en tres pasos que siguen la jerarquía del modelo. Primero se registra la tabla en `audit.tabla_auditada` indicando esquema y nombre. Luego se registran en `audit.columna_auditada` las columnas que se desea vigilar, referenciando la tabla recién creada. Finalmente se registra en `audit.configuracion` una fila por cada combinación de columna y tipo de evento que deba quedar activa.
+## Activar la auditoría de una tabla
 
-Una columna vigilada ante las tres operaciones genera tres filas de configuración. Una columna que solo interese durante modificaciones genera una sola. Esta granularidad permite, por ejemplo, registrar únicamente los borrados de una tabla histórica sin inundar la bitácora con sus inserciones.
+Desde SQL basta una llamada. El siguiente ejemplo vigila tres columnas de una tabla de empleados ante las tres operaciones:
 
-Concluida la configuración se ejecuta `audit.regenerar_todos()` para que los triggers reflejen el nuevo estado. Mientras ese paso no se ejecute, la configuración existe pero no produce efecto alguno.
+```
+SELECT audit.configurar_auditoria(
+           'rrhh', 'empleado',
+           ARRAY['nombre', 'puesto', 'salario'],
+           ARRAY['INSERT', 'UPDATE', 'DELETE']);
+```
 
-## Suspender y reanudar la auditoría
+La función devuelve un texto que confirma cuántas configuraciones quedaron activas y que el trigger se desplegó. Si algo falla, lanza una excepción con el motivo y no deja nada guardado.
+
+El cuarto argumento es opcional y por omisión habilita las tres operaciones. Una columna que solo interese durante modificaciones se configura pasando `ARRAY['UPDATE']`, y así se evita llenar la bitácora con inserciones que no aportan información.
+
+Desde la interfaz gráfica, el procedimiento es elegir la tabla en el desplegable, marcar una o varias columnas en la lista, marcar los eventos y pulsar el botón de activar. Las columnas se eligen con las teclas Control o Mayúsculas para seleccionar varias de una vez.
+
+## Suspender y reanudar
 
 El sistema distingue entre cambios estructurales y cambios de activación, y los trata de forma distinta por una razón de rendimiento.
 
-Agregar o quitar columnas vigiladas, o habilitar un tipo de evento que antes no lo estaba, modifica la estructura del trigger y por tanto exige regenerarlo. En cambio, desactivar una configuración ya existente surte efecto de inmediato, sin regenerar nada, porque el trigger consulta la bandera de activación cada vez que va a registrar un cambio. Lo mismo ocurre al reactivarla.
+Desactivar un evento concreto sobre una columna surte efecto de inmediato, sin regenerar el trigger, porque la función que escribe en la bitácora consulta la bandera de activación en cada llamada. Es la vía recomendada para suspender temporalmente la auditoría durante una carga masiva.
 
-Esto permite suspender temporalmente la auditoría de una columna durante una carga masiva, con una simple actualización de la bandera `activa`, y reanudarla después sin tocar el trigger. Para suspender la auditoría de una tabla entera basta con desactivarla en `audit.tabla_auditada` y ejecutar la regeneración, que en ese caso retirará su trigger.
+```
+SELECT audit.desactivar_evento('rrhh', 'empleado', 'salario', 'UPDATE');
+SELECT audit.activar_evento   ('rrhh', 'empleado', 'salario', 'UPDATE');
+```
 
-## Consulta de la bitácora
+Dejar de vigilar una columna entera sí modifica la estructura del trigger, de modo que la función regenera por su cuenta. Si la columna era la última activa de la tabla, el trigger se retira.
 
-La bitácora se consulta uniéndola con la configuración para recuperar el nombre de la tabla, el de la columna y el tipo de evento. Las consultas por usuario y por columna están sostenidas por índices específicos, de modo que responden en tiempo constante aunque la bitácora crezca.
+```
+SELECT audit.desactivar_columna('rrhh', 'empleado', 'puesto');
+```
+
+Suspender la tabla completa retira su trigger y conserva tanto la configuración como la bitácora acumulada, de manera que la auditoría puede reanudarse más adelante sin volver a configurarla.
+
+```
+SELECT audit.desactivar_tabla('rrhh', 'empleado');
+SELECT audit.activar_tabla   ('rrhh', 'empleado');
+```
+
+En la interfaz gráfica estas cuatro acciones están en el recuadro inferior de la pestaña de configuración, y la reanudación de una tabla suspendida también puede hacerse desde la pestaña de estado, seleccionando la tabla en la lista.
+
+## Comprobar el estado
+
+La vista `audit.v_estado_auditoria` muestra, por tabla, cuántas columnas se vigilan, cuántos eventos hay configurados de cada tipo y si el trigger está instalado. Una tabla con la bandera de activación y la de despliegue en falso está suspendida pero conserva su configuración.
+
+```
+SELECT * FROM audit.v_estado_auditoria;
+```
+
+## Consultar la bitácora
+
+Las tres consultas que pide el enunciado se resuelven con una llamada cada una.
+
+```
+SELECT * FROM audit.consultar_por_usuario('isai');
+SELECT * FROM audit.consultar_por_columna('rrhh', 'empleado', 'salario');
+SELECT * FROM audit.consultar_por_registro('rrhh', 'empleado', 'id=42');
+```
+
+Para combinar filtros o acotar por fechas se usa la función general, cuyos parámetros son todos opcionales:
+
+```
+SELECT * FROM audit.consultar_historial(
+           p_esquema => 'rrhh',
+           p_tabla   => 'empleado',
+           p_desde   => '2026-11-01',
+           p_limite  => 500);
+```
+
+Los resultados vienen en orden cronológico descendente, del cambio más reciente al más antiguo, salvo la consulta por registro, que va en orden ascendente porque ahí interesa leer la historia desde el principio.
+
+Desde la interfaz, la pestaña de bitácora ofrece los mismos filtros en desplegables y campos de fecha, y exporta lo que muestra a un archivo CSV codificado de modo que Excel reconozca los acentos sin configurar nada.
+
+## Requisitos de privilegios
+
+Configurar auditoría exige ser superusuario o miembro del rol `autoaudit_admin`, que el guion de instalación crea. Para otorgar el privilegio a un usuario:
+
+```
+GRANT autoaudit_admin TO nombre_de_usuario;
+```
+
+Consultar la bitácora no requiere privilegios especiales. Escribir directamente en ella está revocado para todos, y las únicas inserciones posibles provienen de las funciones de trigger.
+
+Conviene advertir que desplegar un trigger exige además privilegio para crearlo sobre la tabla de origen, que en PostgreSQL corresponde a quien la posee. En una instalación donde el administrador de auditoría no sea el dueño de las tablas de negocio, la configuración se guardará pero el despliegue fallará, y la función lo informará con un error explícito en lugar de darlo por bueno.
 
 # Pruebas de validación
 
@@ -255,6 +370,18 @@ El sexto caso comprueba el comportamiento de activación en caliente descrito en
 Los casos séptimo y octavo verifican las validaciones del generador. Una tabla sin llave primaria y una columna que no existe en la tabla de origen son rechazadas con errores específicos en lugar de producir un trigger defectuoso.
 
 El noveno caso comprueba que la integridad referencial protege la historia, confirmando que una configuración con bitácora asociada no puede eliminarse. Esta prueba reveló una diferencia entre versiones del motor que conviene dejar anotada. PostgreSQL 18 cambió el código de error que acompaña a las acciones `RESTRICT`, que pasó de 23503, correspondiente a violación de llave foránea, a 23001, correspondiente a violación de restricción. El cambio no figura en las notas de versión, de modo que cualquier código que atrape únicamente 23503 deja de reconocer estas violaciones al actualizar a la versión 18. El manejador de la prueba atrapa ambas condiciones y por eso funciona igual en la versión 16 y en la 18.
+
+## Pruebas del módulo de configuración
+
+Un segundo juego de trece casos, en `pruebas/05_pruebas_configuracion.sql`, cubre el módulo de configuración y el de consulta con el mismo esquema de aserciones.
+
+Los cinco primeros verifican la validación. Una configuración válida persiste y despliega en una sola llamada. Una tabla inexistente, una tabla sin llave primaria, una columna inexistente, un evento fuera del catálogo y el intento de auditar el propio esquema `audit` son rechazados, cada uno con su código de error específico. El caso de la columna inexistente comprueba además que no quedó nada guardado, que es el fallo concreto que la primera versión de la interfaz dejaba pasar.
+
+Los casos sexto, séptimo y octavo recorren el ciclo de suspensión y reanudación en sus tres alcances. Desactivar un evento detiene el registro sin regenerar el trigger y reactivarlo lo reanuda. Desactivar una columna regenera y deja de registrarla mientras las demás siguen vigiladas. Suspender la tabla retira el trigger, conserva la bitácora acumulada y permite reanudar.
+
+Los casos noveno y décimo verifican la seguridad. Se crea un rol sin privilegios y se comprueba que la base rechaza su intento de configurar auditoría y su intento de escribir directamente en la bitácora. Ambos rechazos ocurren en el motor, no en la aplicación.
+
+Los tres últimos cubren las consultas. Las funciones parametrizadas devuelven resultados coherentes entre sí, el historial viene efectivamente en orden cronológico descendente, el filtro por rango de fechas acota como corresponde, y la historia de un registro sigue disponible y crece tras eliminarlo de la tabla de origen.
 
 ## Pruebas de rendimiento
 

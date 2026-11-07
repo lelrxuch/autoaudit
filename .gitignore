@@ -3,3 +3,5 @@
 *.out
 *.toc
 pgdata/
+__pycache__/
+*.pyc

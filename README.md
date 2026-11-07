@@ -21,24 +21,50 @@ sistema queda instalado e inactivo hasta que se configure qué auditar.
 
 ## Uso mínimo
 
-Habilitar una tabla supone registrarla, registrar sus columnas vigiladas y
-registrar una configuración por cada combinación de columna y tipo de evento.
-El archivo `pruebas/02_configuracion_demo.sql` muestra el procedimiento
-completo sobre una tabla de ejemplo.
-
-Hecha la configuración, se despliegan los triggers:
+Habilitar una tabla es una sola llamada. Valida contra el diccionario de datos,
+persiste la configuración y despliega el trigger, todo en una transacción:
 
 ```sql
-SELECT objeto, resultado FROM audit.regenerar_todos();
+SELECT audit.configurar_auditoria(
+           'rrhh', 'empleado',
+           ARRAY['nombre', 'puesto', 'salario'],
+           ARRAY['INSERT', 'UPDATE', 'DELETE']);
 ```
 
-Para revisar el código antes de instalarlo:
+Consultar el historial:
 
 ```sql
-SELECT audit.generar_trigger('rrhh', 'empleado');
+SELECT * FROM audit.consultar_por_usuario('isai');
+SELECT * FROM audit.consultar_por_columna('rrhh', 'empleado', 'salario');
+SELECT * FROM audit.consultar_por_registro('rrhh', 'empleado', 'id=42');
 ```
 
-El estado de la auditoría se consulta en `audit.v_estado_auditoria`.
+Suspender sin perder la bitácora:
+
+```sql
+SELECT audit.desactivar_evento('rrhh', 'empleado', 'salario', 'UPDATE');
+SELECT audit.desactivar_tabla('rrhh', 'empleado');
+```
+
+El estado se consulta en `audit.v_estado_auditoria`. Para revisar el código de
+un trigger antes de instalarlo, `audit.generar_trigger('rrhh', 'empleado')` lo
+devuelve como texto sin ejecutarlo.
+
+## Interfaz gráfica
+
+```bash
+sudo dnf install -y python3-tkinter     # en Fedora tkinter va en paquete aparte
+pip install psycopg2-binary
+
+export AUTOAUDIT_DB=autoaudit
+export AUTOAUDIT_USER=$USER
+python3 app/autoaudit_app.py
+```
+
+Tres pestañas: configuración, bitácora y estado. No construye SQL de
+configuración por su cuenta, llama a las funciones del esquema `audit`, de modo
+que la validación y el control de privilegios existen en un solo lugar. Los
+parámetros de conexión salen del entorno: no hay credenciales en el código.
 
 ## Estructura del repositorio
 
@@ -49,10 +75,14 @@ El estado de la auditoría se consulta en `audit.v_estado_auditoria`.
 | `sql/02_catalogos.sql` | Catálogo de eventos y funciones de contexto y registro |
 | `sql/03_generador.sql` | Generación dinámica de triggers y vista de estado |
 | `sql/04_diccionario_sistema.sql` | Vistas de consulta al diccionario del motor |
+| `sql/05_configuracion.sql` | Módulo de configuración: validación, privilegios, activación y suspensión |
+| `sql/06_reportes.sql` | Consultas parametrizadas de historial y vistas de reporte |
+| `app/autoaudit_app.py` | Interfaz gráfica de configuración y reportes |
 | `pruebas/01_datos_demo.sql` | Esquema de negocio de ejemplo |
 | `pruebas/02_configuracion_demo.sql` | Configuración de auditoría de ejemplo |
-| `pruebas/03_pruebas_funcionales.sql` | Nueve casos de prueba con aserciones |
+| `pruebas/03_pruebas_funcionales.sql` | Nueve casos sobre el generador y la bitácora |
 | `pruebas/04_pruebas_rendimiento.sql` | Medición con volumen creciente |
+| `pruebas/05_pruebas_configuracion.sql` | Trece casos sobre configuración, seguridad y consultas |
 | `pruebas/RESULTADOS.md` | Resultados de la última ejecución |
 | `docs/AutoAudit_documentacion_tecnica.pdf` | Documento técnico entregable |
 | `docs/contrato_integracion.md` | Firmas fijas para el trabajo en paralelo |
@@ -64,11 +94,14 @@ El estado de la auditoría se consulta en `audit.v_estado_auditoria`.
 psql -d basedatos -f pruebas/01_datos_demo.sql
 psql -d basedatos -f pruebas/02_configuracion_demo.sql
 psql -d basedatos -f pruebas/03_pruebas_funcionales.sql
+psql -d basedatos -f pruebas/05_pruebas_configuracion.sql
 psql -d basedatos -f pruebas/04_pruebas_rendimiento.sql
 ```
 
-Las pruebas funcionales abortan al primer fallo, de modo que una ejecución
-completa sin errores equivale a que los nueve casos pasaron.
+Son veintidós casos con aserciones, nueve sobre el generador y la bitácora y
+trece sobre configuración, seguridad y consultas. Los guiones abortan al primer
+fallo, de modo que una ejecución completa sin errores equivale a que todos
+pasaron.
 
 ## Decisiones de diseño
 
@@ -89,3 +122,14 @@ El usuario y la estación de trabajo se resuelven una sola vez por sesión y se
 conservan en variables de configuración de sesión. Sin esa memoria intermedia,
 una carga masiva acumula cientos de miles de versiones muertas sobre tablas de
 una sola fila y el rendimiento se degrada de forma severa.
+
+La validación y el control de privilegios viven en la base y no en la interfaz.
+Una configuración hecha desde `psql` pasa por los mismos controles que una
+hecha desde la aplicación, y el requisito de que solo usuarios administrativos
+puedan configurar auditoría no depende de un cliente que se puede modificar.
+
+`audit.regenerar_todos` no propaga las excepciones: captura el error de cada
+tabla y lo devuelve como texto en una columna del resultado. Las funciones de
+configuración revisan esa salida antes de confirmar la transacción, porque no
+hacerlo deja configuraciones inválidas persistidas que impiden todo despliegue
+posterior de esa tabla.

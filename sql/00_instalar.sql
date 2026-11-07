@@ -19,5 +19,11 @@
 \echo 'AutoAudit: instalando vistas del diccionario de datos...'
 \ir 04_diccionario_sistema.sql
 
+\echo 'AutoAudit: instalando el modulo de configuracion...'
+\ir 05_configuracion.sql
+
+\echo 'AutoAudit: instalando el modulo de consulta y reporte...'
+\ir 06_reportes.sql
+
 \echo 'AutoAudit: instalacion terminada.'
 \echo 'Configure las tablas a auditar y ejecute: SELECT * FROM audit.regenerar_todos();'
